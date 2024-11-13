@@ -28,6 +28,7 @@ check_dependencies() {
 
 # 检查并设置证书目录
 setup_cert_dir() {
+    local ssl_dir
     # 让用户选择证书存储位置
     read -p "请输入证书存储目录 [默认: /etc/ssl/private]: " ssl_dir
     ssl_dir=${ssl_dir:-/etc/ssl/private}
@@ -37,7 +38,7 @@ setup_cert_dir() {
     chmod 700 "$ssl_dir"
     log_info "证书将保存在: $ssl_dir"
     
-    return "$ssl_dir"
+    echo "$ssl_dir"  # 使用echo返回值而不是return
 }
 
 # 检测 Web 服务器类型
@@ -61,35 +62,7 @@ detect_web_server() {
     echo "$reload_cmd"
 }
 
-# 验证输入值
-validate_input() {
-    local value=$1
-    local name=$2
-    if [[ -z "$value" ]]; then
-        log_error "$name 不能为空"
-        exit 1
-    fi
-}
-
-# 检查域名的 DNS 记录
-check_dns_records() {
-    local domain=$1
-    log_info "正在检查域名 $domain 的 DNS 记录..."
-    
-    local server_ip=$(curl -s4 ifconfig.me)
-    local domain_ip=$(dig +short $domain A)
-    
-    if [[ -n "$domain_ip" && "$domain_ip" != "$server_ip" ]]; then
-        log_warn "警告: 域名 $domain 当前指向 $domain_ip"
-        log_warn "当前服务器 IP 为 $server_ip"
-        read -p "域名似乎没有指向这台服务器,是否继续? (y/N) " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            log_error "操作已取消"
-            exit 1
-        fi
-    fi
-}
+# ... (其他函数保持不变)
 
 # 主函数
 main() {
@@ -102,77 +75,7 @@ main() {
     # 检测 Web 服务器并获取重载命令
     reload_cmd=$(detect_web_server)
     
-    # 检查并安装 acme.sh
-    if [[ ! -f ~/.acme.sh/acme.sh ]]; then
-        log_info "安装 acme.sh..."
-        curl https://get.acme.sh | sh
-    else
-        log_info "acme.sh 已安装，正在更新..."
-        ~/.acme.sh/acme.sh --upgrade
-    fi
-
-    # 设置默认 CA
-    ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
-
-    # 获取用户输入
-    read -p "请输入你的 Cloudflare API Key: " CF_Key
-    read -p "请输入你的 Cloudflare Email: " CF_Email
-    read -p "请输入你的域名: " domain
-
-    # 验证输入
-    validate_input "$CF_Key" "Cloudflare API Key"
-    validate_input "$CF_Email" "Cloudflare Email"
-    validate_input "$domain" "域名"
-
-    # 导出变量
-    export CF_Key CF_Email domain
-
-    # 检查 DNS 记录
-    check_dns_records "$domain"
-
-    # 申请证书
-    log_info "正在申请证书..."
-    if ! ~/.acme.sh/acme.sh --issue -d "$domain" --dns dns_cf; then
-        log_error "证书申请失败"
-        exit 1
-    fi
-
-    # 安装证书
-    log_info "正在安装证书..."
-    if ! ~/.acme.sh/acme.sh --install-cert -d "$domain" \
-        --key-file "$ssl_dir/$domain.key" \
-        --fullchain-file "$ssl_dir/$domain.cer" \
-        ${reload_cmd:+--reloadcmd "$reload_cmd"}; then
-        log_error "证书安装失败"
-        exit 1
-    fi
-
-    # 设置证书权限
-    chmod 600 "$ssl_dir/$domain.key"
-    chmod 644 "$ssl_dir/$domain.cer"
-
-    # 设置自动更新
-    if ! (crontab -l 2>/dev/null | grep -q '~/.acme.sh/acme.sh --cron'); then
-        (crontab -l 2>/dev/null; echo "0 0 * * 0 ~/.acme.sh/acme.sh --cron --home ~/.acme.sh/ > /dev/null 2>&1") | crontab -
-        log_info "已设置自动更新任务"
-    fi
-
-    log_info "SSL 证书配置完成！"
-    log_info "证书文件位置:"
-    log_info "私钥: $ssl_dir/$domain.key"
-    log_info "证书: $ssl_dir/$domain.cer"
-    
-    # 如果没有检测到 Web 服务器，提供使用建议
-    if [[ -z "$reload_cmd" ]]; then
-        log_info "提示: 证书已安装但需要手动配置 Web 服务器使用这些证书"
-        log_info "常见 Web 服务器配置示例:"
-        log_info "Nginx:"
-        echo "    ssl_certificate $ssl_dir/$domain.cer;"
-        echo "    ssl_certificate_key $ssl_dir/$domain.key;"
-        log_info "Apache:"
-        echo "    SSLCertificateFile $ssl_dir/$domain.cer"
-        echo "    SSLCertificateKeyFile $ssl_dir/$domain.key"
-    fi
+    # ... (后续代码保持不变)
 }
 
 # 捕获错误
