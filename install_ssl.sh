@@ -1,12 +1,5 @@
 #!/bin/bash
 
-# 1. 创建 scripts 目录（如果不存在）
-mkdir -p ~/scripts
-
-# 2. 创建 install_ssl.sh 文件并写入脚本内容
-cat > ~/scripts/install_ssl.sh << 'EOF'
-#!/bin/bash
-
 # 检查并安装 acme.sh
 if [ ! -f ~/.acme.sh/acme.sh ]; then
     echo "acme.sh 未安装，正在安装..."
@@ -15,12 +8,18 @@ else
     echo "acme.sh 已安装，跳过安装步骤。"
 fi
 
+# 更新 acme.sh 到最新版本
+~/.acme.sh/acme.sh --upgrade
+
 # 设置默认 CA 为 Let's Encrypt
 ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
 
-# 要求用户输入 Cloudflare API Key 和域名
+# 要求用户输入 Cloudflare API Key、Email 和域名
 read -p "请输入你的 Cloudflare API Key: " CF_Key
 export CF_Key
+
+read -p "请输入你的 Cloudflare Email: " CF_Email
+export CF_Email
 
 read -p "请输入你的域名: " domain
 export domain
@@ -53,10 +52,3 @@ fi
 
 echo "定时任务已设置，每周自动更新证书。"
 echo "SSL 证书申请和安装完成。"
-EOF
-
-# 3. 赋予执行权限
-chmod +x ~/scripts/install_ssl.sh
-
-# 4. 运行脚本
-~/scripts/install_ssl.sh
