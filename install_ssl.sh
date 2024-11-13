@@ -11,27 +11,54 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # 定义日志函数
-log_info() {
-    echo -e "${GREEN}[INFO]${NC} $1"
-}
+log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
+log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $1"
-}
-
-log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
-
-# 检查必要的命令是否存在
+# 检查基本依赖
 check_dependencies() {
-    local deps=("curl" "crontab" "nginx")
+    local deps=("curl" "dig")
     for dep in "${deps[@]}"; do
         if ! command -v "$dep" &> /dev/null; then
             log_error "缺少依赖: $dep"
             exit 1
         fi
     done
+}
+
+# 检查并设置证书目录
+setup_cert_dir() {
+    # 让用户选择证书存储位置
+    read -p "请输入证书存储目录 [默认: /etc/ssl/private]: " ssl_dir
+    ssl_dir=${ssl_dir:-/etc/ssl/private}
+    
+    # 创建目录
+    mkdir -p "$ssl_dir"
+    chmod 700 "$ssl_dir"
+    log_info "证书将保存在: $ssl_dir"
+    
+    return "$ssl_dir"
+}
+
+# 检测 Web 服务器类型
+detect_web_server() {
+    local reload_cmd=""
+    
+    if command -v nginx &> /dev/null; then
+        log_info "检测到 Nginx"
+        if nginx -t &> /dev/null; then
+            reload_cmd="systemctl reload nginx"
+        fi
+    elif command -v apache2 &> /dev/null || command -v httpd &> /dev/null; then
+        log_info "检测到 Apache"
+        if apache2ctl -t &> /dev/null || httpd -t &> /dev/null; then
+            reload_cmd="systemctl reload apache2 2>/dev/null || systemctl reload httpd"
+        fi
+    else
+        log_warn "未检测到 Web 服务器，证书将只进行安装但不会自动重载服务"
+    fi
+    
+    echo "$reload_cmd"
 }
 
 # 验证输入值
@@ -44,23 +71,23 @@ validate_input() {
     fi
 }
 
-# 备份现有证书
-backup_certs() {
+# 检查域名的 DNS 记录
+check_dns_records() {
     local domain=$1
-    local backup_dir="/etc/nginx/ssl/backup/$(date +%Y%m%d_%H%M%S)"
+    log_info "正在检查域名 $domain 的 DNS 记录..."
     
-    if [[ -f "/etc/nginx/ssl/$domain.key" ]]; then
-        mkdir -p "$backup_dir"
-        cp "/etc/nginx/ssl/$domain."{key,cer} "$backup_dir/" 2>/dev/null || true
-        log_info "已备份现有证书到 $backup_dir"
-    fi
-}
-
-# 检查 nginx 配置
-check_nginx_config() {
-    if ! nginx -t &>/dev/null; then
-        log_error "Nginx 配置测试失败"
-        exit 1
+    local server_ip=$(curl -s4 ifconfig.me)
+    local domain_ip=$(dig +short $domain A)
+    
+    if [[ -n "$domain_ip" && "$domain_ip" != "$server_ip" ]]; then
+        log_warn "警告: 域名 $domain 当前指向 $domain_ip"
+        log_warn "当前服务器 IP 为 $server_ip"
+        read -p "域名似乎没有指向这台服务器,是否继续? (y/N) " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            log_error "操作已取消"
+            exit 1
+        fi
     fi
 }
 
@@ -68,11 +95,17 @@ check_nginx_config() {
 main() {
     # 检查依赖
     check_dependencies
-
+    
+    # 设置证书目录
+    ssl_dir=$(setup_cert_dir)
+    
+    # 检测 Web 服务器并获取重载命令
+    reload_cmd=$(detect_web_server)
+    
     # 检查并安装 acme.sh
     if [[ ! -f ~/.acme.sh/acme.sh ]]; then
         log_info "安装 acme.sh..."
-        curl https://get.acme.sh | sh -s email="${CF_Email:=''}"
+        curl https://get.acme.sh | sh
     else
         log_info "acme.sh 已安装，正在更新..."
         ~/.acme.sh/acme.sh --upgrade
@@ -94,11 +127,8 @@ main() {
     # 导出变量
     export CF_Key CF_Email domain
 
-    # 创建证书目录
-    mkdir -p /etc/nginx/ssl
-
-    # 备份现有证书
-    backup_certs "$domain"
+    # 检查 DNS 记录
+    check_dns_records "$domain"
 
     # 申请证书
     log_info "正在申请证书..."
@@ -110,26 +140,39 @@ main() {
     # 安装证书
     log_info "正在安装证书..."
     if ! ~/.acme.sh/acme.sh --install-cert -d "$domain" \
-        --key-file "/etc/nginx/ssl/$domain.key" \
-        --fullchain-file "/etc/nginx/ssl/$domain.cer" \
-        --reloadcmd "nginx -t && systemctl reload nginx"; then
+        --key-file "$ssl_dir/$domain.key" \
+        --fullchain-file "$ssl_dir/$domain.cer" \
+        ${reload_cmd:+--reloadcmd "$reload_cmd"}; then
         log_error "证书安装失败"
         exit 1
     fi
 
+    # 设置证书权限
+    chmod 600 "$ssl_dir/$domain.key"
+    chmod 644 "$ssl_dir/$domain.cer"
+
     # 设置自动更新
     if ! (crontab -l 2>/dev/null | grep -q '~/.acme.sh/acme.sh --cron'); then
-        (crontab -l 2>/dev/null; echo "0 0 * * 0 ~/.acme.sh/acme.sh --cron --home ~/.acme.sh/ --user-agent acme.sh-auto-update > /dev/null 2>&1") | crontab -
+        (crontab -l 2>/dev/null; echo "0 0 * * 0 ~/.acme.sh/acme.sh --cron --home ~/.acme.sh/ > /dev/null 2>&1") | crontab -
         log_info "已设置自动更新任务"
     fi
 
-    # 验证 nginx 配置
-    check_nginx_config
-
     log_info "SSL 证书配置完成！"
     log_info "证书文件位置:"
-    log_info "私钥: /etc/nginx/ssl/$domain.key"
-    log_info "证书: /etc/nginx/ssl/$domain.cer"
+    log_info "私钥: $ssl_dir/$domain.key"
+    log_info "证书: $ssl_dir/$domain.cer"
+    
+    # 如果没有检测到 Web 服务器，提供使用建议
+    if [[ -z "$reload_cmd" ]]; then
+        log_info "提示: 证书已安装但需要手动配置 Web 服务器使用这些证书"
+        log_info "常见 Web 服务器配置示例:"
+        log_info "Nginx:"
+        echo "    ssl_certificate $ssl_dir/$domain.cer;"
+        echo "    ssl_certificate_key $ssl_dir/$domain.key;"
+        log_info "Apache:"
+        echo "    SSLCertificateFile $ssl_dir/$domain.cer"
+        echo "    SSLCertificateKeyFile $ssl_dir/$domain.key"
+    fi
 }
 
 # 捕获错误
