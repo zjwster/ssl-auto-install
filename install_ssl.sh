@@ -32,19 +32,19 @@ setup_cert_dir() {
     # 让用户选择证书存储位置
     read -p "请输入证书存储目录 [默认: /etc/ssl/private]: " ssl_dir
     ssl_dir=${ssl_dir:-/etc/ssl/private}
-    
+
     # 创建目录
     mkdir -p "$ssl_dir"
     chmod 700 "$ssl_dir"
     log_info "证书将保存在: $ssl_dir"
-    
-    echo "$ssl_dir"  # 使用echo返回值而不是return
+
+    echo "$ssl_dir"
 }
 
 # 检测 Web 服务器类型
 detect_web_server() {
     local reload_cmd=""
-    
+
     if command -v nginx &> /dev/null; then
         log_info "检测到 Nginx"
         if nginx -t &> /dev/null; then
@@ -58,7 +58,7 @@ detect_web_server() {
     else
         log_warn "未检测到 Web 服务器，证书将只进行安装但不会自动重载服务"
     fi
-    
+
     echo "$reload_cmd"
 }
 
@@ -71,6 +71,17 @@ get_domain() {
         exit 1
     fi
     echo "$domain"
+}
+
+# 获取邮箱地址
+get_email() {
+    local email
+    read -p "请输入您的电子邮箱地址（用于接收证书更新提醒）: " email
+    if [[ -z "$email" ]]; then
+        log_error "电子邮箱地址不能为空"
+        exit 1
+    fi
+    echo "$email"
 }
 
 # 验证域名DNS解析
@@ -98,6 +109,7 @@ verify_domain_dns() {
 generate_ssl_certificate() {
     local domain="$1"
     local ssl_dir="$2"
+    local email="$3"
 
     # 检查 certbot 是否安装
     if ! command -v certbot &> /dev/null; then
@@ -107,7 +119,7 @@ generate_ssl_certificate() {
     fi
 
     # 生成证书
-    certbot certonly --standalone -d "$domain" --agree-tos --email your-email@example.com --non-interactive
+    certbot certonly --standalone -d "$domain" --agree-tos --email "$email" --non-interactive
 
     # 复制证书到指定目录
     local cert_source="/etc/letsencrypt/live/$domain"
@@ -186,11 +198,14 @@ main() {
     # 获取域名
     domain=$(get_domain)
 
+    # 获取邮箱地址
+    email=$(get_email)
+
     # 验证域名 DNS 解析
     verify_domain_dns "$domain"
 
     # 生成 SSL 证书
-    generate_ssl_certificate "$domain" "$ssl_dir"
+    generate_ssl_certificate "$domain" "$ssl_dir" "$email"
 
     # 更新 Web 服务器配置
     update_web_server_config "$domain" "$ssl_dir" "$reload_cmd"
