@@ -20,15 +20,20 @@ fi
 # 设置默认 CA 为 Let's Encrypt
 /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt
 
-# 要求用户输入 Cloudflare API Key、Email 和域名
-read -p "请输入你的 Cloudflare API Key: " CF_Key
+# 尝试从配置文件 /root/.cf_credentials 读取 CF_Key、CF_Email 和 domain
+if [ -f /root/.cf_credentials ]; then
+    source /root/.cf_credentials
+fi
+
+# 检查 CF_Key、CF_Email 和 domain 是否已设置
+if [ -z "$CF_Key" ] || [ -z "$CF_Email" ] || [ -z "$domain" ]; then
+    echo "请在环境变量或 /root/.cf_credentials 文件中设置 CF_Key、CF_Email 和 domain。"
+    exit 1
+fi
+
+# 导出变量供 acme.sh 使用
 export CF_Key
-
-read -p "请输入你的 Cloudflare Email: " CF_Email
 export CF_Email
-
-read -p "请输入你的域名: " domain
-export domain
 
 # 检查并创建 /etc/ssl/ 目录
 if [ ! -d /etc/ssl/ ]; then
@@ -57,9 +62,11 @@ chmod 644 /etc/ssl/"$domain".crt
 
 echo "证书已安装到 /etc/ssl/ 目录中。"
 
-# 设置定时任务以每周自动更新证书
-(crontab -l 2>/dev/null | grep -q '/root/.acme.sh/acme.sh --cron' ) || \
-(crontab -l 2>/dev/null; echo "0 0 * * 0 /root/.acme.sh/acme.sh --cron --home /root/.acme.sh/ --user-agent acme.sh-auto-update") | crontab -
+# 确保 acme.sh 的定时任务已设置
+if ! crontab -l | grep -q '/root/.acme.sh/acme.sh --cron'; then
+    echo "设置 acme.sh 的定时任务..."
+    /root/.acme.sh/acme.sh --install-cronjob
+fi
 
-echo "定时任务已设置，每周自动更新证书。"
+echo "定时任务已设置，acme.sh 将自动更新证书。"
 echo "SSL 证书申请和安装完成。"
