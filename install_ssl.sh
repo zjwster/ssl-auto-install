@@ -207,13 +207,15 @@ ensure_credentials_file() {
 
         # Get Key
         while [ -z "$input_key" ]; do
-             # Use -s for silent input
-            read -rsp "Cloudflare Global API Key (CF_Key) (输入时隐藏): " input_key
-            echo # Print a newline because -s doesn't
+             # Use -r for raw, -p for prompt. *** REMOVED -s option ***
+            read -rp "Cloudflare Global API Key (CF_Key): " input_key
+             # Prompt text changed to remove "(输入时隐藏)"
+            # echo # Newline after input is handled by user pressing Enter now. Optional echo removed.
             if [ -z "$input_key" ]; then
                 echo "[警告] API Key 不能为空。" >&2
             else
                 # Requirement 2: Show the entered key AFTER it's read
+                # This log confirmation is still useful even if input wasn't hidden.
                 log_info "[确认] 输入的 CF_Key: ${input_key}"
             fi
         done
