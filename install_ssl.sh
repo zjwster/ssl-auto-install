@@ -75,13 +75,36 @@ install_acme() {
         local install_script="get-acme.sh"
         if curl -fsS https://get.acme.sh -o "${install_script}"; then
             log_info "已下载 acme.sh 安装脚本。"
-            eval sh "'${install_script}'" --home "'${ACME_HOME}'" ${LE_ACCOUNT_EMAIL:+"--accountemail"} ${LE_ACCOUNT_EMAIL:+"'${LE_ACCOUNT_EMAIL}'"}
-            rm -f "${install_script}"
-            log_info "acme.sh 已成功安装到 ${ACME_HOME}。"
+
+            # 准备安装参数数组
+            local install_args=("--home" "${ACME_HOME}")
+            if [ -n "${LE_ACCOUNT_EMAIL}" ]; then
+                # 如果提供了邮箱，添加 --accountemail 参数和邮箱值
+                install_args+=("--accountemail" "${LE_ACCOUNT_EMAIL}")
+            fi
+
+            log_info "执行安装命令: sh ${install_script} ${install_args[*]}"
+            # 直接执行安装脚本，将数组元素作为独立参数传递
+            if sh "${install_script}" "${install_args[@]}"; then
+                log_info "acme.sh 安装脚本执行完成。"
+            else
+                # 如果安装脚本本身返回错误
+                log_error "acme.sh 安装脚本执行失败。请检查上面的输出。"
+                rm -f "${install_script}" # 仍然尝试清理
+                exit 1
+            fi
+
+            rm -f "${install_script}" # 清理安装脚本
+
+            # 确认 acme.sh 命令现在是否存在
             ACME_CMD="${ACME_HOME}/acme.sh"
             if [ ! -f "${ACME_CMD}" ]; then
-               log_error "即使在尝试安装后，仍然在 ${ACME_CMD} 找不到 acme.sh 命令。"
+               # 如果安装脚本成功执行但文件仍不存在，则有问题
+               log_error "即使安装脚本执行完成，仍然在 ${ACME_CMD} 找不到 acme.sh 命令。"
+               log_error "请检查 ${ACME_HOME} 目录的内容和权限。"
                exit 1
+            else
+                 log_info "acme.sh 已成功安装到 ${ACME_HOME}。"
             fi
         else
             log_error "下载 acme.sh 安装脚本失败。"
