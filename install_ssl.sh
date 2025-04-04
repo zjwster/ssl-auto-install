@@ -188,6 +188,7 @@ ensure_credentials_file() {
 
         # Use values from file (if it existed) as defaults for prompts
         local default_email="${current_cf_email:-}"
+        local default_key="${current_cf_key:-}"
         local default_domain="${current_domain:-}"
         # No default for key as it's sensitive and might be wrong anyway
 
@@ -199,24 +200,15 @@ ensure_credentials_file() {
             input_email="${input_email:-${default_email}}" # Apply default if empty
             if [ -z "$input_email" ]; then
                 echo "[警告] 邮箱不能为空。" >&2
-            else
-                # Requirement 2: Show entered value
-                log_info "[确认] 输入的 CF_Email: ${input_email}"
             fi
         done
 
         # Get Key
         while [ -z "$input_key" ]; do
-             # Use -r for raw, -p for prompt. *** REMOVED -s option ***
-            read -rp "Cloudflare Global API Key (CF_Key): " input_key
-             # Prompt text changed to remove "(输入时隐藏)"
-            # echo # Newline after input is handled by user pressing Enter now. Optional echo removed.
+            read -rp "Cloudflare Global API Key (CF_Key) [${default_key}]: " input_key
+            input_key="${input_key:-${default_key}}" # Apply default if empty
             if [ -z "$input_key" ]; then
                 echo "[警告] API Key 不能为空。" >&2
-            else
-                # Requirement 2: Show the entered key AFTER it's read
-                # This log confirmation is still useful even if input wasn't hidden.
-                log_info "[确认] 输入的 CF_Key: ${input_key}"
             fi
         done
 
@@ -226,9 +218,6 @@ ensure_credentials_file() {
             input_domain="${input_domain:-${default_domain}}" # Apply default if empty
             if [ -z "$input_domain" ]; then
                 echo "[警告] 域名不能为空。" >&2
-            else
-                 # Requirement 2: Show entered value
-                log_info "[确认] 输入的 domain: ${input_domain}"
             fi
         done
 
