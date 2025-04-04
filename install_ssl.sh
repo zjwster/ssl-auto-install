@@ -46,6 +46,7 @@ usage() {
                               (默认: ${DEFAULT_CRED_FILE})
                               此文件必须包含 export CF_Key、export CF_Email 和 export domain。
                               如果文件不存在或内容不全，脚本将提示输入。
+                              如果文件存在且完整，将询问是否修改。
                               可以通过环境变量 CF_Key 和 CF_Email 设置认证凭证 (优先级更高)。
   -m, --email <邮箱地址>      用于 Let's Encrypt 账户注册/恢复的邮箱地址。推荐提供。
   --cert-dir <目录>           安装证书和密钥文件的目录。
@@ -121,6 +122,7 @@ install_acme() {
 ensure_credentials_file() {
     log_info "正在检查 Cloudflare 凭证文件: ${CRED_FILE}"
     local needs_update=0
+    local ask_modify=0 # Flag to indicate if we should ask the user about modifying
     local current_cf_key=""
     local current_cf_email=""
     local current_domain=""
@@ -130,69 +132,106 @@ ensure_credentials_file() {
 
     if [ -f "${CRED_FILE}" ]; then
         log_info "找到凭证文件。正在检查内容..."
+        # Temporarily disable 'exit on unset variable' to safely source the file
         set +u
         CF_Key=""
         CF_Email=""
         domain=""
         # shellcheck source=/dev/null
         source "${CRED_FILE}"
+        # Capture the values from the file, providing empty defaults if unset
         current_cf_key="${CF_Key:-}"
         current_cf_email="${CF_Email:-}"
         current_domain="${domain:-}"
+        # Re-enable 'exit on unset variable'
         set -u
 
-        if [ -z "${current_cf_key}" ]; then
-            log_info "文件 ${CRED_FILE} 中缺少 CF_Key。"
-            needs_update=1
-        fi
-        if [ -z "${current_cf_email}" ]; then
-            log_info "文件 ${CRED_FILE} 中缺少 CF_Email。"
-            needs_update=1
-        fi
-        # 检查 domain 是否为空是必须的，因为它是目标域名
-        if [ -z "${current_domain}" ]; then
-            log_info "文件 ${CRED_FILE} 中缺少 'domain' 变量。"
-            needs_update=1
+        # Check if all required variables are present and non-empty in the file
+        if [ -n "${current_cf_key}" ] && [ -n "${current_cf_email}" ] && [ -n "${current_domain}" ]; then
+            log_info "凭证文件包含有效的 CF_Key, CF_Email 和 domain。"
+            ask_modify=1 # File is complete, so we can ask the user if they want to modify
+        else
+            log_info "凭证文件不完整。"
+            needs_update=1 # File exists but is incomplete, force update
+            if [ -z "${current_cf_key}" ]; then log_info " - 缺少 CF_Key"; fi
+            if [ -z "${current_cf_email}" ]; then log_info " - 缺少 CF_Email"; fi
+            if [ -z "${current_domain}" ]; then log_info " - 缺少 domain"; fi
         fi
 
-        if [ ${needs_update} -eq 0 ]; then
-             log_info "凭证文件包含 CF_Key, CF_Email 和 domain。"
+        # *** 新增逻辑: 如果文件完整，询问用户是否修改 ***
+        if [ ${needs_update} -eq 0 ] && [ ${ask_modify} -eq 1 ]; then
+            local modify_choice=""
+            # Use -i 'N' for default value in bash 4+ if available, otherwise rely on user input check
+            read -rp "凭证文件 ${CRED_FILE} 已存在且包含有效值。是否要修改 CF_Key, CF_Email 和 domain? (y/N): " modify_choice
+            if [[ "${modify_choice}" =~ ^[Yy]$ ]]; then
+                log_info "用户选择修改现有凭证和域名。"
+                needs_update=1 # Set flag to trigger input prompts below
+                # Keep current values as defaults for the prompts
+            else
+                log_info "用户选择不修改，将使用文件中的现有值。"
+                # needs_update remains 0, function will skip the input section
+            fi
         fi
+        # *** 结束新增逻辑 ***
+
     else
         log_info "凭证文件 ${CRED_FILE} 不存在。"
-        needs_update=1
+        needs_update=1 # File doesn't exist, force update/creation
     fi
 
+    # If needs_update is 1 (either file was missing, incomplete, or user chose to modify)
     if [ ${needs_update} -eq 1 ]; then
-        log_info "需要获取 Cloudflare API 凭证和目标域名。"
+        log_info "需要获取或更新 Cloudflare API 凭证和目标域名。"
         local input_email=""
         local input_key=""
-        local input_domain="" # 用于用户输入的目标域名
+        local input_domain=""
 
+        # Use values from file (if it existed) as defaults for prompts
         local default_email="${current_cf_email:-}"
-        local default_domain="${current_domain:-}" # 使用文件中可能已有的 domain 作为默认值
+        local default_domain="${current_domain:-}"
+        # No default for key as it's sensitive and might be wrong anyway
 
-        log_info "请输入以下信息："
+        log_info "请输入以下信息 (留空并按 Enter 键可使用方括号中的默认值):"
+
+        # Get Email
         while [ -z "$input_email" ]; do
             read -rp "Cloudflare 账户邮箱 (CF_Email) [${default_email}]: " input_email
-            input_email="${input_email:-${default_email}}"
-            if [ -z "$input_email" ]; then echo "[警告] 邮箱不能为空。" >&2; fi
+            input_email="${input_email:-${default_email}}" # Apply default if empty
+            if [ -z "$input_email" ]; then
+                echo "[警告] 邮箱不能为空。" >&2
+            else
+                # Requirement 2: Show entered value
+                log_info "[确认] 输入的 CF_Email: ${input_email}"
+            fi
         done
 
+        # Get Key
         while [ -z "$input_key" ]; do
-            read -rsp "Cloudflare Global API Key (CF_Key) (必须输入): " input_key
-            echo
-            if [ -z "$input_key" ]; then echo "[警告] API Key 不能为空。" >&2; fi
+             # Use -s for silent input
+            read -rsp "Cloudflare Global API Key (CF_Key) (输入时隐藏): " input_key
+            echo # Print a newline because -s doesn't
+            if [ -z "$input_key" ]; then
+                echo "[警告] API Key 不能为空。" >&2
+            else
+                # Requirement 2: Show the entered key AFTER it's read
+                log_info "[确认] 输入的 CF_Key: ${input_key}"
+            fi
         done
 
-        # 获取目标域名
+        # Get Domain
         while [ -z "$input_domain" ]; do
-            read -rp "要申请证书的域名 (将写入文件中的 'domain') [${default_domain}]: " input_domain
-            input_domain="${input_domain:-${default_domain}}"
-            if [ -z "$input_domain" ]; then echo "[警告] 域名不能为空。" >&2; fi
+            read -rp "要申请证书的域名 (domain) [${default_domain}]: " input_domain
+            input_domain="${input_domain:-${default_domain}}" # Apply default if empty
+            if [ -z "$input_domain" ]; then
+                echo "[警告] 域名不能为空。" >&2
+            else
+                 # Requirement 2: Show entered value
+                log_info "[确认] 输入的 domain: ${input_domain}"
+            fi
         done
 
         log_info "正在将凭证和域名写入文件: ${CRED_FILE}"
+        # Overwrite the file with the new/updated values
         if printf "export CF_Key=\"%s\"\nexport CF_Email=\"%s\"\nexport domain=\"%s\"\n" "${input_key}" "${input_email}" "${input_domain}" > "${CRED_FILE}"; then
            chmod 600 "${CRED_FILE}"
            log_info "凭证和域名已成功写入 ${CRED_FILE} 并设置权限为 600。"
@@ -201,112 +240,94 @@ ensure_credentials_file() {
             exit 1
         fi
     fi
+    # If needs_update was 0 initially and user chose not to modify, this function just finishes here.
 }
+
 
 load_credentials() {
     log_info "正在加载 Cloudflare 凭证和目标域名..."
-    unset CF_Key CF_Email domain # 清空旧值
+    unset CF_Key CF_Email domain # Clear potentially existing environment variables sourced from elsewhere
 
-    # 优先使用环境变量进行认证 (Key 和 Email)
-    local cf_key_source="文件"
-    local cf_email_source="文件"
-
-    if [ -n "${CF_Key:-}" ]; then
-        log_info "检测到环境变量 CF_Key，将优先使用它进行认证。"
-        cf_key_source="环境变量"
-    fi
-    if [ -n "${CF_Email:-}" ]; then
-         log_info "检测到环境变量 CF_Email，将优先使用它进行认证。"
-         cf_email_source="环境变量"
-    fi
-
-    # 检查凭证文件是否存在以加载 domain (以及 Key/Email 如果环境变量不存在)
-    if [ -f "${CRED_FILE}" ]; then
-        log_info "从文件 ${CRED_FILE} 加载变量..."
-        set +u
-        # shellcheck source=/dev/null
-        source "${CRED_FILE}"
-        set -u
-
-        # 如果环境变量没有设置 Key/Email, 则从文件导出
-        if [ "$cf_key_source" == "文件" ]; then
-            export CF_Key="${CF_Key:-}"
-        fi
-         if [ "$cf_email_source" == "文件" ]; then
-            export CF_Email="${CF_Email:-}"
-        fi
-        # 始终导出文件中的 domain，并检查其是否存在
-        export domain="${domain:-}"
-        if [ -z "${domain}" ]; then
-             log_error "错误：凭证文件 ${CRED_FILE} 中未找到或未设置 'domain' 变量。"
-             log_error "请确文件格式为 export domain=\"your.domain.com\"。"
-             exit 1
-        fi
-        # 将加载到的 domain 赋值给脚本的目标域名变量
-        TARGET_DOMAIN="${domain}"
-        log_info "从文件加载的目标域名: ${TARGET_DOMAIN}"
-
-    elif [ -z "${domain:-}" ]; then
-        # 文件不存在，且环境变量也没有提供 domain (标准环境变量里也没有 domain)
-         log_error "错误：找不到凭证文件 ${CRED_FILE}，无法确定目标域名。"
-         exit 1
-    fi
-
-    # 最终检查认证所需的 Key 和 Email 是否就绪
-    if [ -z "${CF_Key:-}" ] || [ -z "${CF_Email:-}" ]; then
-        log_error "错误：无法加载 Cloudflare 认证凭证 (CF_Key 和/或 CF_Email)。"
-        log_error "请检查环境变量或凭证文件 ${CRED_FILE}。"
+    # Check if CRED_FILE exists before attempting to source it
+    if [ ! -f "${CRED_FILE}" ]; then
+        log_error "错误：凭证文件 ${CRED_FILE} 未找到。请先运行脚本生成或检查路径。"
+        # We already ran ensure_credentials_file, so this should theoretically not happen unless file perms changed
+        # or ensure_credentials_file failed silently, but it's a good safeguard.
         exit 1
     fi
 
-    # 检查 TARGET_DOMAIN 是否最终被赋值
-    if [ -z "${TARGET_DOMAIN}" ]; then
-         log_error "严重错误：未能确定要操作的目标域名。"
-         exit 1
+    # Source the credentials file to load CF_Key, CF_Email, and domain
+    log_info "从文件 ${CRED_FILE} 加载变量..."
+    set +u # Temporarily disable exit on unset variable
+    # shellcheck source=/dev/null
+    source "${CRED_FILE}"
+    set -u # Re-enable
+
+    # Check if variables were actually loaded from the file
+    if [ -z "${CF_Key:-}" ] || [ -z "${CF_Email:-}" ] || [ -z "${domain:-}" ]; then
+        log_error "错误：从 ${CRED_FILE} 加载凭证或域名失败。"
+        log_error "请确保文件包含格式正确的 'export CF_Key=...', 'export CF_Email=...' 和 'export domain=...' 行。"
+        exit 1
     fi
 
-    log_info "Cloudflare 认证凭证 (CF_Key from ${cf_key_source}, CF_Email from ${cf_email_source}) 已准备好。"
-    log_info "将要操作的目标域名: ${TARGET_DOMAIN}"
+    # Assign the domain from the file to our target variable
+    TARGET_DOMAIN="${domain}"
+    log_info "从文件加载的目标域名: ${TARGET_DOMAIN}"
+
+    # Export the credentials from the file for acme.sh to use
+    # Note: Environment variables set *before* running the script still take precedence
+    # if acme.sh checks them directly, but this script primarily relies on sourcing the file.
+    # We re-export here to be absolutely sure they are available for the acme.sh child process.
+    export CF_Key
+    export CF_Email
+    # 'domain' variable doesn't need to be exported for acme.sh, TARGET_DOMAIN is used internally.
+
+    log_info "Cloudflare 凭证 (CF_Key, CF_Email) 和目标域名 (${TARGET_DOMAIN}) 已从文件加载。"
+    # Removed the "source" logging (env vs file) as it's simpler now: we always source from the file after ensure_credentials_file.
 }
 
 setup_acme() {
     log_info "正在配置 acme.sh..."
     if [ ! -x "${ACME_CMD}" ]; then log_error "命令不存在: ${ACME_CMD}"; exit 1; fi
-    "${ACME_CMD}" --upgrade
-    "${ACME_CMD}" --set-default-ca --server letsencrypt
+    "${ACME_CMD}" --upgrade --home "${ACME_HOME}" # Ensure upgrade respects the specified home
+    "${ACME_CMD}" --set-default-ca --server letsencrypt --home "${ACME_HOME}"
     if [ -n "${LE_ACCOUNT_EMAIL}" ]; then
         log_info "注册/更新 Let's Encrypt 账户邮箱: ${LE_ACCOUNT_EMAIL}"
-        if ! "${ACME_CMD}" --register-account -m "${LE_ACCOUNT_EMAIL}"; then
+        # Pass --home to ensure account registration uses the correct directory
+        if ! "${ACME_CMD}" --register-account -m "${LE_ACCOUNT_EMAIL}" --home "${ACME_HOME}"; then
             log_error "注册 Let's Encrypt 账户失败 (邮箱: ${LE_ACCOUNT_EMAIL})。请检查日志。"
+            # Continue script execution, as account registration failure might not block certificate issuance if already registered.
         fi
     else
-        log_info "未提供 Let's Encrypt 账户邮箱。"
+        log_info "未提供 Let's Encrypt 账户邮箱 (-m 参数)。"
     fi
 }
 
 issue_and_install_cert() {
-    # 使用从凭证文件中加载的 TARGET_DOMAIN
+    # TARGET_DOMAIN is set by load_credentials from the file
     log_info "正在为域名 ${TARGET_DOMAIN} 签发证书 (使用 dns_cf 方式)..."
     mkdir -p "${CERT_DIR}" || { log_error "创建目录失败: ${CERT_DIR}"; exit 1; }
 
-    log_info "执行签发命令: ${ACME_CMD} --issue --dns dns_cf -d ${TARGET_DOMAIN}"
-    # acme.sh 会使用导出的 CF_Key 和 CF_Email 环境变量
-    if ! "${ACME_CMD}" --issue --dns dns_cf -d "${TARGET_DOMAIN}"; then
+    # CF_Key and CF_Email are exported by load_credentials
+    log_info "执行签发命令: ${ACME_CMD} --issue --dns dns_cf -d ${TARGET_DOMAIN} --home ${ACME_HOME}"
+    # Pass --home to ensure acme.sh uses the correct config/account/log location
+    # Environment variables CF_Key and CF_Email will be used automatically by dns_cf hook
+    if ! "${ACME_CMD}" --issue --dns dns_cf -d "${TARGET_DOMAIN}" --home "${ACME_HOME}"; then
         log_error "为 ${TARGET_DOMAIN} 签发证书失败。"
-        log_error "使用的 Email: ${CF_Email:-?}, 请检查 Cloudflare API 权限和 DNS 传播。"
+        log_error "使用的 Email (来自文件): ${CF_Email:-?}, 请检查 Cloudflare API 权限和 DNS 传播。"
         log_error "检查日志: ${ACME_HOME}/acme.sh.log"
         exit 1
     fi
     log_info "证书签发成功 for ${TARGET_DOMAIN}."
 
     log_info "正在将证书安装到 ${CERT_DIR}..."
-    # 使用 TARGET_DOMAIN 构建文件名
     local key_file="${CERT_DIR}/${TARGET_DOMAIN}.key"
     local fullchain_file="${CERT_DIR}/${TARGET_DOMAIN}.crt"
 
     local install_args=(
         "--install-cert"
-        "-d" "${TARGET_DOMAIN}" # 指定要安装证书的域名
+        "--home" "${ACME_HOME}" # Pass --home here too
+        "-d" "${TARGET_DOMAIN}" # Specify the domain for which to install the cert
         "--key-file" "${key_file}"
         "--fullchain-file" "${fullchain_file}"
     )
@@ -329,9 +350,10 @@ issue_and_install_cert() {
 setup_cron() {
     log_info "正在检查 acme.sh 的 cron 任务..."
      if [ ! -x "${ACME_CMD}" ]; then log_error "命令不存在，无法检查/安装 cron: ${ACME_CMD}"; return 1; fi
-    if ! "${ACME_CMD}" --list | grep -q 'Auto upgrade'; then
+     # Pass --home to list and install-cronjob to ensure it manages the right installation
+    if ! "${ACME_CMD}" --list --home "${ACME_HOME}" | grep -q 'Auto upgrade'; then
        log_info "未找到 cron 任务。正在安装/更新 cron 任务..."
-       if ! "${ACME_CMD}" --install-cronjob; then
+       if ! "${ACME_CMD}" --install-cronjob --home "${ACME_HOME}"; then
            log_error "安装 acme.sh cron 任务失败。可能需要手动设置。"
        else
            log_info "acme.sh cron 任务已成功安装/更新。"
@@ -343,7 +365,7 @@ setup_cron() {
 
 # --- 主程序执行 ---
 
-# 解析命令行参数 (移除了 -d / --domain)
+# Parse command-line arguments
 ARGS=$(getopt -o c:m:r:h --long credentials:,email:,cert-dir:,reloadcmd:,acme-home:,help -n "$(basename "$0")" -- "$@")
 if [ $? -ne 0 ]; then
     usage
@@ -357,29 +379,27 @@ while true; do
         -m|--email) LE_ACCOUNT_EMAIL="$2"; shift 2 ;;
         --cert-dir) CERT_DIR="$2"; shift 2 ;;
         -r|--reloadcmd) RELOAD_CMD="$2"; shift 2 ;;
-        --acme-home) ACME_HOME="$2"; shift 2 ;;
+        --acme-home) ACME_HOME="$2"; ACME_CMD="${ACME_HOME}/acme.sh"; shift 2 ;; # Update ACME_CMD if home changes
         -h|--help) usage ;;
         --) shift; break ;;
         *) echo "内部错误！参数解析失败。" ; exit 1 ;;
     esac
 done
 
-# -d 参数不再是必需的，目标域名来自凭证文件
-
-# --- 开始执行主要逻辑 ---
-# 日志信息将在 load_credentials 后输出，因为那时才知道 TARGET_DOMAIN
+# --- Begin Main Logic ---
 
 check_root
-install_acme
-ensure_credentials_file      # 确保凭证文件存在且包含 CF_Key, CF_Email, domain
-load_credentials             # 加载凭证 (优先环境变量 Key/Email) 并设置 TARGET_DOMAIN
+install_acme                 # Install acme.sh if not found
+ensure_credentials_file      # Check/create/update credentials file, asks user if modify needed
+load_credentials             # Load credentials & domain from file, export Key/Email
 
-# 现在 TARGET_DOMAIN 应该有值了，可以开始主要流程
+# Now TARGET_DOMAIN should have a value loaded from the file
 log_info "开始为凭证文件中定义的域名 ${TARGET_DOMAIN} 进行 SSL 证书自动化处理"
 
-setup_acme
-issue_and_install_cert       # 使用 TARGET_DOMAIN 签发和安装证书
-setup_cron
+# Pass --home to all relevant acme.sh commands
+setup_acme                   # Upgrade acme.sh, set default CA, register account
+issue_and_install_cert       # Issue and install the certificate using TARGET_DOMAIN
+setup_cron                   # Setup auto-renewal cron job
 
 log_info "域名 ${TARGET_DOMAIN} 的 SSL 证书设置已成功完成。"
 
